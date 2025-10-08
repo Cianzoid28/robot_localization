@@ -76,7 +76,7 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 300          # the number of particles to use
+        self.n_particles = 100          # the number of particles to use
 
         self.d_thresh = 0.2             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
@@ -246,14 +246,50 @@ class ParticleFilter(Node):
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
-        # TODO create particles
+        
+        # occupancy field geometry info
+        width = self.occupancy_field.map.info.width          # in grid cells
+        height = self.occupancy_field.map.info.height        # in grid cells
+        resolution = self.occupancy_field.map.info.resolution  # meters per cell
+        origin = self.occupancy_field.map.info.origin         # Pose object
+        origin_x = origin.position.x
+        origin_y = origin.position.y
 
+        # map width and height in meters
+        map_width_meters = width * resolution
+        map_height_meters = height * resolution
+
+        # setting position bounds for random particle generation
+        x_min = origin_x
+        x_max = origin_x + map_width_meters
+        y_min = origin_y
+        y_max = origin_y + map_height_meters
+
+        for i in range(self.n_particles):
+            # generate random (x, y, theta) for each particle
+            x = np.random.uniform(x_min, x_max)
+            y = np.random.uniform(y_min, y_max)
+            theta = np.random.uniform(-np.pi, np.pi)
+            
+            # Check if this point is in free space (not too close to an obstacle)
+            dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+            if not math.isnan(dist) and dist > 0.2:  # 0.2 meters away from obstacles
+                break  # Valid sample
+            
+            # assign each particle the randomly generated (x, y, theta) and even weights
+            self.p = Particle(x=x, y=y, theta=theta, w=1/self.n_particles)
+            self.particle_cloud.append(self.p)
+        
         self.normalize_particles()
         self.update_robot_pose()
 
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO: implement this
+
+        self.particle_cloud 
+
+
         pass
 
     def publish_particles(self, timestamp):
