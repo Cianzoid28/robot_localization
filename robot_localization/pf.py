@@ -82,6 +82,11 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
+        self.position_offset_mean = 0.0
+        self.position_offset_std = 0.2
+        self.theta_offset_mean = 0.0
+        self.theta_offset_std = math.pi / 6  # 30 degrees
+        self.min_obstacle_distance = 0.1  # meters
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -183,10 +188,22 @@ class ParticleFilter(Node):
         """
         # first make sure that the particle weights are normalized
         self.normalize_particles()
+        
+        # sort particles by weight
+        sorted_particles = sorted(self.particle_cloud, key=lambda p: p.w, reverse=True)
 
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        # just to get started we will fix the robot's pose to always be at the origin
-        self.robot_pose = Pose()
+        # take the top 25% highest weighted particles and average their poses
+        indices = int(len(sorted_particles) * 0.75)
+        top_particles = sorted_particles[:indices]
+        avg_x = sum(p.x for p in top_particles) / len(top_particles)
+        avg_y = sum(p.y for p in top_particles) / len(top_particles)
+        avg_theta = sum(p.theta for p in top_particles) / len(top_particles)
+
+        # set the robot pose to the average of the top particles
+        self.pose = Pose()
+        self.pose.position = Point(x=avg_x, y=avg_y, z=0.0)
+        q = quaternion_from_euler(0, 0, avg_theta) # convert to quaternion
+        self.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
