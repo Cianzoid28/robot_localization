@@ -16,7 +16,7 @@ import math
 import time
 import numpy as np
 from occupancy_field import OccupancyField
-from helper_functions import TFHelper
+from helper_functions import TFHelper, draw_random_sample
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 
@@ -218,17 +218,41 @@ class ParticleFilter(Node):
             particle.x += delta[0] * math.cos(particle.theta) - delta[1] * math.sin(particle.theta)
             particle.y += delta[1] * math.cos(particle.theta) + delta[0] * math.sin(particle.theta)
             particle.theta += delta[2]
-
-
+            # normalize theta to be between -pi and pi
+            particle.theta = self.transform_helper.angle_normalize(particle.theta)
+            
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
-            The weights stored with each particle should define the probability that a particular
-            particle is selected in the resampling step.  You may want to make use of the given helper
-            function draw_random_sample in helper_functions.py.
+            The weights stored with each particle should define the probability
+            that a particular particle is selected in the resampling step.
+            You may want to make use of the given helper function 
+            draw_random_sample in helper_functions.py.
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        # TODO: fill out the rest of the implementation
+        
+        # use the draw_random_sample helper function to resample particles 
+        # based on their weights
+        choices = self.particle_cloud
+        probabilities = [particle.w for particle in self.particle_cloud]
+        n = self.n_particles
+
+        new_particles = draw_random_sample(choices, probabilities, n)
+        self.particle_cloud = new_particles
+        
+        # calculate the bounding box of the obstacles in the map to keep particles within bounds
+        (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
+        
+        # add noise to each resampled particle
+        for particle in self.particle_cloud:
+            particle.x = particle.x + np.random.normal(0, 0.2) # 0.2 meters stddev in x
+            particle.y = particle.y + np.random.normal(0, 0.2) # 0.2 meters stddev in y
+            particle.theta = particle.theta + np.random.normal(0, math.pi/6) # 30 deg stddev in theta
+            particle.theta = self.transform_helper.angle_normalize(particle.theta) # normalize theta
+
+            # keep particles within map bounds
+            particle.x = min(max(particle.x, x_min), x_max)
+            particle.y = min(max(particle.y, y_min), y_max)
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
@@ -250,7 +274,7 @@ class ParticleFilter(Node):
                     laser_y_map = particle.y + (math.sin(particle.theta) * laser_x_robot + math.cos(particle.theta) * laser_y_robot)
 
                     # compute the closest obstacle distance at the position of the laser point
-                    # if the scan matches the environment well, this distance should be small
+                    # if the scan matches the environment well, these distances should be small
                     current_error = self.occupancy_field.get_closest_obstacle_distance(laser_x_map, laser_y_map)
 
                     # only add to the error if the distance from the lookup table is valid
