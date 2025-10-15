@@ -262,9 +262,9 @@ class ParticleFilter(Node):
         
         # add noise to each resampled particle
         for particle in self.particle_cloud:
-            particle.x = particle.x + np.random.normal(0, 0.2) # 0.2 meters stddev in x
-            particle.y = particle.y + np.random.normal(0, 0.2) # 0.2 meters stddev in y
-            particle.theta = particle.theta + np.random.normal(0, math.pi/6) # 30 deg stddev in theta
+            particle.x = particle.x + np.random.normal(self.position_offset_mean, self.position_offset_stddev)
+            particle.y = particle.y + np.random.normal(self.position_offset_mean, self.position_offset_stddev)
+            particle.theta = particle.theta + np.random.normal(self.angle_offset_mean, self.angle_offset_stddev)
             particle.theta = self.transform_helper.angle_normalize(particle.theta) # normalize theta
 
             # keep particles within map bounds
@@ -333,7 +333,7 @@ class ParticleFilter(Node):
             
             # Check if this point is in free space (not too close to an obstacle)
             dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
-            if not math.isnan(dist) and dist > 0.1:  # 0.1 meters threshold
+            if not math.isnan(dist) and dist > self.min_obstacle_distance:  # 0.1 meters threshold
                 break  # Valid sample
             
             # assign each particle the randomly generated (x, y, theta) and even weights
