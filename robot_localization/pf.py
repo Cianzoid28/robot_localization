@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-""" This is the starter code for the robot localization project """
-
 import rclpy
 from threading import Thread
 from rclpy.time import Time
@@ -76,14 +74,14 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 100          # the number of particles to use
+        self.n_particles = 500          # the number of particles to use
 
-        self.d_thresh = 0.2             # the amount of linear movement before performing an update
-        self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
+        self.d_thresh = 0.05             # the amount of linear movement before performing an update
+        self.a_thresh = math.pi/18       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
         self.position_offset_mean = 0.0
-        self.position_offset_std = 0.2
+        self.position_offset_std = 0.5
         self.theta_offset_mean = 0.0
         self.theta_offset_std = math.pi / 6  # 30 degrees
         self.min_obstacle_distance = 0.1  # meters
@@ -193,17 +191,21 @@ class ParticleFilter(Node):
         sorted_particles = sorted(self.particle_cloud, key=lambda p: p.w, reverse=True)
 
         # take the top 25% highest weighted particles and average their poses
-        indices = int(len(sorted_particles) * 0.75)
+        indices = int(len(sorted_particles) * 0.25)
         top_particles = sorted_particles[:indices]
         avg_x = sum(p.x for p in top_particles) / len(top_particles)
         avg_y = sum(p.y for p in top_particles) / len(top_particles)
         avg_theta = sum(p.theta for p in top_particles) / len(top_particles)
 
+        # avg_x = sum(p.x for p in self.particle_cloud) / len(self.particle_cloud)
+        # avg_y = sum(p.y for p in self.particle_cloud) / len(self.particle_cloud)
+        # avg_theta = sum(p.theta for p in self.particle_cloud) / len(self.particle_cloud)
+
         # set the robot pose to the average of the top particles
-        self.pose = Pose()
-        self.pose.position = Point(x=avg_x, y=avg_y, z=0.0)
+        self.robot_pose = Pose()
+        self.robot_pose.position = Point(x=avg_x, y=avg_y, z=0.0)
         q = quaternion_from_euler(0, 0, avg_theta) # convert to quaternion
-        self.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.robot_pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
@@ -262,9 +264,9 @@ class ParticleFilter(Node):
         
         # add noise to each resampled particle
         for particle in self.particle_cloud:
-            particle.x = particle.x + np.random.normal(self.position_offset_mean, self.position_offset_stddev)
-            particle.y = particle.y + np.random.normal(self.position_offset_mean, self.position_offset_stddev)
-            particle.theta = particle.theta + np.random.normal(self.angle_offset_mean, self.angle_offset_stddev)
+            particle.x = particle.x + np.random.normal(self.position_offset_mean, self.position_offset_std)
+            particle.y = particle.y + np.random.normal(self.position_offset_mean, self.position_offset_std)
+            particle.theta = particle.theta + np.random.normal(self.theta_offset_mean, self.theta_offset_std)
             particle.theta = self.transform_helper.angle_normalize(particle.theta) # normalize theta
 
             # keep particles within map bounds
@@ -301,7 +303,10 @@ class ParticleFilter(Node):
 
             # convert error to a weight (the lower the error, the higher the weight)
             # inversely proportional to the square of the error to punish large errors
-            particle.w = 1.0 / (total_particle_error ** 2)
+            if total_particle_error == 0:
+                particle.w = 1e-6  # avoid division by zero
+            else:
+                particle.w = 1.0 / (total_particle_error ** 2)
         
         self.normalize_particles()  # normalize weights after updating
 
@@ -326,19 +331,17 @@ class ParticleFilter(Node):
         (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
 
         # generate random (x, y, theta) for each particle
-        for _ in range(self.n_particles):
+        while len(self.particle_cloud) < self.n_particles:
             x = np.random.uniform(x_min, x_max)
             y = np.random.uniform(y_min, y_max)
             theta = np.random.uniform(-np.pi, np.pi)
-            
-            # Check if this point is in free space (not too close to an obstacle)
+
             dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
-            if not math.isnan(dist) and dist > self.min_obstacle_distance:  # 0.1 meters threshold
-                break  # Valid sample
-            
-            # assign each particle the randomly generated (x, y, theta) and even weights
-            self.p = Particle(x=x, y=y, theta=theta, w=1/self.n_particles)
-            self.particle_cloud.append(self.p)
+            if dist is not None and not math.isnan(dist) and dist > self.min_obstacle_distance:
+                p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
+                self.particle_cloud.append(p)
+
+        print("Initialized {0} particles".format(len(self.particle_cloud)))
 
         self.normalize_particles()
         self.update_robot_pose()
