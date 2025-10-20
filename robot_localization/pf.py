@@ -74,14 +74,14 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 500          # the number of particles to use
+        self.n_particles = 300          # the number of particles to use
 
         self.d_thresh = 0.05             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/18       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
         self.position_offset_mean = 0.0
-        self.position_offset_std = 0.5
+        self.position_offset_std = 0.2
         self.theta_offset_mean = 0.0
         self.theta_offset_std = math.pi / 6  # 30 degrees
         self.min_obstacle_distance = 0.1  # meters
@@ -190,8 +190,8 @@ class ParticleFilter(Node):
         # sort particles by weight
         sorted_particles = sorted(self.particle_cloud, key=lambda p: p.w, reverse=True)
 
-        # take the top 25% highest weighted particles and average their poses
-        indices = int(len(sorted_particles) * 0.25)
+        # take the top 5% highest weighted particles and average their poses
+        indices = int(len(sorted_particles) * 0.05)
         top_particles = sorted_particles[:indices]
         avg_x = sum(p.x for p in top_particles) / len(top_particles)
         avg_y = sum(p.y for p in top_particles) / len(top_particles)
@@ -256,7 +256,8 @@ class ParticleFilter(Node):
         probabilities = [particle.w for particle in self.particle_cloud]
         n = self.n_particles
 
-        new_particles = draw_random_sample(choices, probabilities, n)
+        # perform random resampling for half the particles
+        new_particles = draw_random_sample(choices, probabilities, n//2)
         self.particle_cloud = new_particles
         
         # calculate the bounding box of the obstacles in the map to keep particles within bounds
@@ -272,6 +273,18 @@ class ParticleFilter(Node):
             # keep particles within map bounds
             particle.x = min(max(particle.x, x_min), x_max)
             particle.y = min(max(particle.y, y_min), y_max)
+        
+        # resample rest of the particles randomly within map bounds
+        # goal is to prevent particle death
+        for _ in range(n - len(self.particle_cloud)):
+            x = np.random.uniform(x_min, x_max)
+            y = np.random.uniform(y_min, y_max)
+            theta = np.random.uniform(-np.pi, np.pi)
+            p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
+            self.particle_cloud.append(p)
+        
+        # normalize particle weights after resampling
+        self.normalize_particles()
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
@@ -306,7 +319,7 @@ class ParticleFilter(Node):
             if total_particle_error == 0:
                 particle.w = 1e-6  # avoid division by zero
             else:
-                particle.w = 1.0 / (total_particle_error ** 2)
+                particle.w = 1.0 / (total_particle_error)**2
         
         self.normalize_particles()  # normalize weights after updating
 
