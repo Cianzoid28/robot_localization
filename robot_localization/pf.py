@@ -74,16 +74,16 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 300          # the number of particles to use
+        self.n_particles = 350          # the number of particles to use
 
-        self.d_thresh = 0.05             # the amount of linear movement before performing an update
-        self.a_thresh = math.pi/18       # the amount of angular movement before performing an update
+        self.d_thresh = 0.0             # the amount of linear movement before performing an update
+        self.a_thresh = 0.0 #math.pi/12       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
         self.position_offset_mean = 0.0
-        self.position_offset_std = 0.2
+        self.position_offset_std = 0.2  # meters
         self.theta_offset_mean = 0.0
-        self.theta_offset_std = math.pi / 6  # 30 degrees
+        self.theta_offset_std = math.pi / 18  # 10 degrees
         self.min_obstacle_distance = 0.1  # meters
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
@@ -150,13 +150,13 @@ class ParticleFilter(Node):
             return
         
         (r, theta) = self.transform_helper.convert_scan_to_polar_in_robot_frame(msg, self.base_frame)
-        print("r[0]={0}, theta[0]={1}".format(r[0], theta[0]))
+        #print("r[0]={0}, theta[0]={1}".format(r[0], theta[0]))
         # clear the current scan so that we can process the next one
         self.scan_to_process = None
 
         self.odom_pose = new_pose
         new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
-        print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
+        #print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
 
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
@@ -195,17 +195,33 @@ class ParticleFilter(Node):
         top_particles = sorted_particles[:indices]
         avg_x = sum(p.x for p in top_particles) / len(top_particles)
         avg_y = sum(p.y for p in top_particles) / len(top_particles)
-        avg_theta = sum(p.theta for p in top_particles) / len(top_particles)
+        #avg_theta = sum(p.theta for p in top_particles) / len(top_particles)
+        sin_sum = sum(math.sin(p.theta) for p in top_particles)
+        cos_sum = sum(math.cos(p.theta) for p in top_particles)
+        avg_theta = math.atan2(sin_sum, cos_sum)
+        avg_theta = self.transform_helper.angle_normalize(avg_theta)
+
 
         # avg_x = sum(p.x for p in self.particle_cloud) / len(self.particle_cloud)
         # avg_y = sum(p.y for p in self.particle_cloud) / len(self.particle_cloud)
         # avg_theta = sum(p.theta for p in self.particle_cloud) / len(self.particle_cloud)
+
+        # use weighted average of all particles for pose estimation
+        # total_weight = sum(p.w for p in self.particle_cloud)
+        # avg_x = sum(p.x * p.w for p in self.particle_cloud) / total_weight
+        # avg_y = sum(p.y * p.w for p in self.particle_cloud) / total_weight
+        # avg_theta = sum(p.theta * p.w for p in self.particle_cloud) / total_weight
+
 
         # set the robot pose to the average of the top particles
         self.robot_pose = Pose()
         self.robot_pose.position = Point(x=avg_x, y=avg_y, z=0.0)
         q = quaternion_from_euler(0, 0, avg_theta) # convert to quaternion
         self.robot_pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+
+        # print the current estimated pose for debugging
+        print("Estimated pose: x={:.3f}, y={:.3f}, yaw={:.3f}".format(avg_x, avg_y, avg_theta))
+
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
@@ -230,14 +246,25 @@ class ParticleFilter(Node):
         else:
             self.current_odom_xy_theta = next_odom_xy_theta
             return
-
+        
+        # motion noise params
+        odom_pos_std = 0.025  # meters (tune)
+        odom_theta_std = math.radians(2.0)  # radians (tune)
         # update each particle's pose in the map frame based on odom frame data
         # the transformation is structured after a 2D rotation matrix
         for particle in self.particle_cloud:
-            particle.x += delta[0] * math.cos(particle.theta) - delta[1] * math.sin(particle.theta)
-            particle.y += delta[1] * math.cos(particle.theta) + delta[0] * math.sin(particle.theta)
-            particle.theta += delta[2]
-            # normalize theta to be between -pi and pi
+            # rotate odom delta into particle frame (approx)
+            dx_map = delta[0] * math.cos(particle.theta) - delta[1] * math.sin(particle.theta)
+            dy_map = delta[1] * math.cos(particle.theta) + delta[0] * math.sin(particle.theta)
+
+            # add Gaussian noise
+            dx_noisy = dx_map + np.random.normal(0.0, odom_pos_std)
+            dy_noisy = dy_map + np.random.normal(0.0, odom_pos_std)
+            dtheta_noisy = delta[2] + np.random.normal(0.0, odom_theta_std)
+
+            particle.x += dx_noisy
+            particle.y += dy_noisy
+            particle.theta += dtheta_noisy
             particle.theta = self.transform_helper.angle_normalize(particle.theta)
             
     def resample_particles(self):
@@ -256,12 +283,12 @@ class ParticleFilter(Node):
         probabilities = [particle.w for particle in self.particle_cloud]
         n = self.n_particles
 
-        # perform random resampling for half the particles
-        new_particles = draw_random_sample(choices, probabilities, n//2)
+        # perform random resampling for part the particles
+        new_particles = draw_random_sample(choices, probabilities, int(n*0.6))
         self.particle_cloud = new_particles
         
-        # calculate the bounding box of the obstacles in the map to keep particles within bounds
-        (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
+        # print to verify map bounds (should be constant)
+        #print(f"Map bounds: x({self.x_min}, {self.x_max}), y({self.y_min}, {self.y_max})")
         
         # add noise to each resampled particle
         for particle in self.particle_cloud:
@@ -271,14 +298,14 @@ class ParticleFilter(Node):
             particle.theta = self.transform_helper.angle_normalize(particle.theta) # normalize theta
 
             # keep particles within map bounds
-            particle.x = min(max(particle.x, x_min), x_max)
-            particle.y = min(max(particle.y, y_min), y_max)
+            particle.x = min(max(particle.x, self.x_min), self.x_max)
+            particle.y = min(max(particle.y, self.y_min), self.y_max)
         
         # resample rest of the particles randomly within map bounds
         # goal is to prevent particle death
         for _ in range(n - len(self.particle_cloud)):
-            x = np.random.uniform(x_min, x_max)
-            y = np.random.uniform(y_min, y_max)
+            x = np.random.uniform(self.x_min, self.x_max)
+            y = np.random.uniform(self.y_min, self.y_max)
             theta = np.random.uniform(-np.pi, np.pi)
             p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
             self.particle_cloud.append(p)
@@ -287,42 +314,66 @@ class ParticleFilter(Node):
         self.normalize_particles()
 
     def update_particles_with_laser(self, r, theta):
-        """ Updates the particle weights in response to the scan data
-            r: the distance readings to obstacles
-            theta: the angle relative to the robot frame for each corresponding reading 
         """
-        # iterate through each particle
+        This function represents the particle filter sensor model. The model
+        utilizes a likelihood field model that compares laser endpoints
+        to the occupancy field to update particle weights based on how well the
+        predicted measurements match the actual measurements.
+
+        Args: 
+            - r: list of ranges from the laser scan
+            - theta: list of angles corresponding to each range measurement
+        """
+        sigma = 0.2  # measurement noise (meters)
+        beam_step = max(1, int(len(r) / 180))  # subdivide into n beams
+        max_beam_range = 5.0  # lidar range
+
+        # iterate through each particle and update its weight
         for particle in self.particle_cloud:
-            # iterate through each laser scan range and angle
-            for r_i, theta_i in zip(r, theta):
-                total_particle_error = 0.0
-                if math.isfinite(r_i):
-                    # compute cartesian coordinates of the laser point in the robot frame
-                    laser_x_robot = r_i * math.cos(theta_i)
-                    laser_y_robot = r_i * math.sin(theta_i)
+            # weight stored in log domain to prevent underflow
+            log_w = 0.0
+            # count of valid laser end-points
+            valid_count = 0
 
-                    # convert the point to the map frame
-                    laser_x_map = particle.x + (math.cos(particle.theta) * laser_x_robot - math.sin(particle.theta) * laser_y_robot)
-                    laser_y_map = particle.y + (math.sin(particle.theta) * laser_x_robot + math.cos(particle.theta) * laser_y_robot)
+            # iterate through each laser beam in the scan
+            for i in range(0, len(r), beam_step):
+                r_i = r[i]
+                theta_i = theta[i]
 
-                    # compute the closest obstacle distance at the position of the laser point
-                    # if the scan matches the environment well, these distances should be small
-                    current_error = self.occupancy_field.get_closest_obstacle_distance(laser_x_map, laser_y_map)
+                # skip invalid or out of range measurements
+                if not math.isfinite(r_i) or r_i <= 0.0 or r_i > max_beam_range:
+                    continue
 
-                    # only add to the error if the distance from the lookup table is valid
-                    if current_error is not None and not math.isnan(current_error):
-                        # compute total error for this particle over all laser points
-                        total_particle_error += current_error
+                # represent each laser endpoint in map frame
+                # transformation is represented as a 2D rotation and translation matrix
+                l_x = r_i * math.cos(theta_i)
+                l_y = r_i * math.sin(theta_i)
+                l_x_map = particle.x + (math.cos(particle.theta) * l_x - math.sin(particle.theta) * l_y)
+                l_y_map = particle.y + (math.sin(particle.theta) * l_x + math.cos(particle.theta) * l_y)
 
-            # convert error to a weight (the lower the error, the higher the weight)
-            # inversely proportional to the square of the error to punish large errors
-            if total_particle_error == 0:
-                particle.w = 1e-6  # avoid division by zero
-            else:
-                particle.w = 1.0 / (total_particle_error)**2
-        
-        self.normalize_particles()  # normalize weights after updating
+                # handle out of bounds laser endpoints
+                if (
+                    l_x_map < self.x_min or l_x_map >= self.x_max or
+                    l_y_map < self.y_min or l_y_map >= self.y_max
+                ):
+                    # apply low weight penalty for being out of bounds
+                    log_w += math.log(1e-6)
+                else:
+                    # get distance of the laser endpoint to the closest obstacle
+                    d = self.occupancy_field.get_closest_obstacle_distance(l_x_map, l_y_map)
+                    # if the distance value is invalid, skip this point
+                    if d is None or math.isnan(d):
+                        continue
+                    # if valid, update log weight using Gaussian likelihood model
+                    log_w += (-0.5 * (d ** 2) / (sigma ** 2))
+                    valid_count += 1
 
+            # apply penalty if there are no valid laser end-points
+            # otherwise, assign weight normally
+            particle.w = math.exp(log_w) if valid_count > 0 else 1e-6
+
+        # normalize particle weights after laser update
+        self.normalize_particles()
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -339,14 +390,14 @@ class ParticleFilter(Node):
 
         # initialize empty list to contain all particles
         self.particle_cloud = []
-            
-        # setting position bounds for random particle generation
-        (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
+
+        # setting position bounds for the map
+        (self.x_min, self.x_max), (self.y_min, self.y_max) = self.occupancy_field.get_obstacle_bounding_box()
 
         # generate random (x, y, theta) for each particle
         while len(self.particle_cloud) < self.n_particles:
-            x = np.random.uniform(x_min, x_max)
-            y = np.random.uniform(y_min, y_max)
+            x = np.random.uniform(self.x_min, self.x_max)
+            y = np.random.uniform(self.y_min, self.y_max)
             theta = np.random.uniform(-np.pi, np.pi)
 
             dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
