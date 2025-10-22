@@ -74,18 +74,11 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 350          # the number of particles to use
+        self.n_particles = 300          # the number of particles to use
 
-        self.d_thresh = 0.0             # the amount of linear movement before performing an update
-        self.a_thresh = 0.0 #math.pi/12       # the amount of angular movement before performing an update
-
-        # TODO: define additional constants if needed
-        self.position_offset_mean = 0.0
-        self.position_offset_std = 0.2  # meters
-        self.theta_offset_mean = 0.0
-        self.theta_offset_std = math.pi / 18  # 10 degrees
-        self.min_obstacle_distance = 0.1  # meters
-
+        self.d_thresh = 0.05            # the amount of linear movement before performing an update
+        self.a_thresh = math.pi/12      # the amount of angular movement before performing an update
+        
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
 
@@ -161,8 +154,10 @@ class ParticleFilter(Node):
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
         elif not self.particle_cloud:
-            # now that we have all of the necessary transforms we can update the particle cloud
-            self.initialize_particle_cloud(msg.header.stamp)
+            # initialize particle cloud with initial pose
+            self.initialize_particle_cloud(msg.header.stamp, self.current_odom_xy_theta)
+            # initialize particle cloud wihtout odom data
+            #self.initialize_particle_cloud(msg.header.stamp)
         elif self.moved_far_enough_to_update(new_odom_xy_theta):
             # we have moved far enough to do an update!
             self.update_particles_with_odom()    # update based on odometry
@@ -201,18 +196,6 @@ class ParticleFilter(Node):
         avg_theta = math.atan2(sin_sum, cos_sum)
         avg_theta = self.transform_helper.angle_normalize(avg_theta)
 
-
-        # avg_x = sum(p.x for p in self.particle_cloud) / len(self.particle_cloud)
-        # avg_y = sum(p.y for p in self.particle_cloud) / len(self.particle_cloud)
-        # avg_theta = sum(p.theta for p in self.particle_cloud) / len(self.particle_cloud)
-
-        # use weighted average of all particles for pose estimation
-        # total_weight = sum(p.w for p in self.particle_cloud)
-        # avg_x = sum(p.x * p.w for p in self.particle_cloud) / total_weight
-        # avg_y = sum(p.y * p.w for p in self.particle_cloud) / total_weight
-        # avg_theta = sum(p.theta * p.w for p in self.particle_cloud) / total_weight
-
-
         # set the robot pose to the average of the top particles
         self.robot_pose = Pose()
         self.robot_pose.position = Point(x=avg_x, y=avg_y, z=0.0)
@@ -220,7 +203,7 @@ class ParticleFilter(Node):
         self.robot_pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
         # print the current estimated pose for debugging
-        print("Estimated pose: x={:.3f}, y={:.3f}, yaw={:.3f}".format(avg_x, avg_y, avg_theta))
+        #print("Estimated pose: x={:.3f}, y={:.3f}, yaw={:.3f}".format(avg_x, avg_y, avg_theta))
 
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
@@ -248,8 +231,8 @@ class ParticleFilter(Node):
             return
         
         # motion noise params
-        odom_pos_std = 0.025  # meters (tune)
-        odom_theta_std = math.radians(2.0)  # radians (tune)
+        odom_pos_std = 0.01  # meters
+        odom_theta_std = 0.02  # radians
         # update each particle's pose in the map frame based on odom frame data
         # the transformation is structured after a 2D rotation matrix
         for particle in self.particle_cloud:
@@ -276,25 +259,30 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        
+
+        # fraction of particles to resample based on weights
+        resample_frac_w = 0.4
+
         # use the draw_random_sample helper function to resample particles 
         # based on their weights
         choices = self.particle_cloud
         probabilities = [particle.w for particle in self.particle_cloud]
         n = self.n_particles
-
-        # perform random resampling for part the particles
-        new_particles = draw_random_sample(choices, probabilities, int(n*0.6))
+        new_particles = draw_random_sample(choices, probabilities, int(n*resample_frac_w))
         self.particle_cloud = new_particles
         
         # print to verify map bounds (should be constant)
         #print(f"Map bounds: x({self.x_min}, {self.x_max}), y({self.y_min}, {self.y_max})")
         
-        # add noise to each resampled particle
+        # noise parameters for resampling
+        self.position_offset_std = 0.25  # meters
+        self.theta_offset_std = math.pi / 12  # 15 degrees
+
+        # add noise to each resampled particle based on weight
         for particle in self.particle_cloud:
-            particle.x = particle.x + np.random.normal(self.position_offset_mean, self.position_offset_std)
-            particle.y = particle.y + np.random.normal(self.position_offset_mean, self.position_offset_std)
-            particle.theta = particle.theta + np.random.normal(self.theta_offset_mean, self.theta_offset_std)
+            particle.x = particle.x + np.random.normal(0.0, self.position_offset_std)
+            particle.y = particle.y + np.random.normal(0.0, self.position_offset_std)
+            particle.theta = particle.theta + np.random.normal(0.0, self.theta_offset_std)
             particle.theta = self.transform_helper.angle_normalize(particle.theta) # normalize theta
 
             # keep particles within map bounds
@@ -324,8 +312,8 @@ class ParticleFilter(Node):
             - r: list of ranges from the laser scan
             - theta: list of angles corresponding to each range measurement
         """
-        sigma = 0.2  # measurement noise (meters)
-        beam_step = max(1, int(len(r) / 180))  # subdivide into n beams
+        sigma = 0.2  # measurement noise (need to tune this a lot)
+        beam_step = max(1, int(len(r) / 120))  # subdivide into n beams
         max_beam_range = 5.0  # lidar range
 
         # iterate through each particle and update its weight
@@ -365,7 +353,16 @@ class ParticleFilter(Node):
                     if d is None or math.isnan(d):
                         continue
                     # if valid, update log weight using Gaussian likelihood model
-                    log_w += (-0.5 * (d ** 2) / (sigma ** 2))
+                    w_hit = 0.95 # weight for hit component
+                    w_noise = 0.05 # weight for random noise component
+                    # Gaussian probability of hit
+                    p_hit = math.exp(-0.5 * (d ** 2) / (sigma ** 2))
+                    # random noise probability
+                    p_noise = 1.0/max_beam_range
+                    # weighted combo of both probabilities
+                    p_total = w_hit * p_hit + w_noise * p_noise
+                    # shift into log space
+                    log_w += math.log(p_total)
                     valid_count += 1
 
             # apply penalty if there are no valid laser end-points
@@ -385,25 +382,50 @@ class ParticleFilter(Node):
         """ Initialize the particle cloud randomly with a uniformly random 
             distribution within the border of the map."""
 
-        if xy_theta == None:
-            xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
-
         # initialize empty list to contain all particles
         self.particle_cloud = []
 
         # setting position bounds for the map
         (self.x_min, self.x_max), (self.y_min, self.y_max) = self.occupancy_field.get_obstacle_bounding_box()
 
-        # generate random (x, y, theta) for each particle
-        while len(self.particle_cloud) < self.n_particles:
-            x = np.random.uniform(self.x_min, self.x_max)
-            y = np.random.uniform(self.y_min, self.y_max)
-            theta = np.random.uniform(-np.pi, np.pi)
+        # minimum distance from obstacles for particle initialization
+        self.min_obstacle_distance = 0.1  # meters
 
-            dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
-            if dist is not None and not math.isnan(dist) and dist > self.min_obstacle_distance:
+        # assign RNG a seed so random particle distributions can be reproduced
+        self.rng = np.random.default_rng(12345)
+        
+        if xy_theta is not None:
+            print("Initializing particles around pose x={0}, y={1}, theta={2}".format(*xy_theta))
+            x_mean, y_mean, theta_mean = xy_theta
+            # generate (x, y, theta) from normal distribution for each particle
+            while len(self.particle_cloud) < self.n_particles:
+                x = self.rng.normal(x_mean, 1.0)
+                y = self.rng.normal(y_mean, 1.0)
+                theta = self.rng.normal(theta_mean, 2*math.pi)
                 p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
                 self.particle_cloud.append(p)
+
+                # if generated particle is too close to an obstacle, discard it
+                # else, add it to the particle cloud
+                dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+                if dist is not None and not math.isnan(dist) and dist > self.min_obstacle_distance:
+                    p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
+                    self.particle_cloud.append(p)
+
+        if xy_theta is None:
+            print("Initializing particles randomly in map bounds")
+            # generate random (x, y, theta) for each particle
+            while len(self.particle_cloud) < self.n_particles:
+                x = self.rng.uniform(self.x_min, self.x_max)
+                y = self.rng.uniform(self.y_min, self.y_max)
+                theta = self.rng.uniform(-np.pi, np.pi)
+                
+                # if generated particle is too close to an obstacle, discard it
+                # else, add it to the particle cloud
+                dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+                if dist is not None and not math.isnan(dist) and dist > self.min_obstacle_distance:
+                    p = Particle(x=x, y=y, theta=theta, w=1.0 / self.n_particles)
+                    self.particle_cloud.append(p)
 
         print("Initialized {0} particles".format(len(self.particle_cloud)))
 
