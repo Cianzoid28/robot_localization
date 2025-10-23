@@ -1,8 +1,14 @@
 # Project Goal:
 The goal of this project was to implement a particle filter in ROS2 to estimate a mobile robot’s pose within a known map. To do this, we utilized both LIDAR and odometry data to produce an accurate pose estimate, visualizing our resulting particle cloud and pose estimate in RViz. This allows us to verify the robot’s estimated pose relative to its actual location, especially with being able to see the LIDAR scan points overlaid over the occupancy grid / map.
 
+Here is a demo of the particle filter. The green arrow represents the estimated pose, each blue arrow represents a particle, the red dots are the laser scan endpoints, and the map is the occupancy grid.
+
+(insert demo)
+
 ## Approach Overview:
 Below is a flow chart that overviews the entire process with how a particle filter can generate a pose estimate:
+
+(insert graphic)
 
 In this project, most of the focus went towards the design and implementation of the following functions: `initialize_particle_cloud()`, `update_particles_with_odom()`, `update_particles_with_laser()`, `update_robot_pose()`, and `resample_particles()`.
 
@@ -36,7 +42,7 @@ The `resample_particles()` function aims to redistribute the whole set of partic
 ## Challenges:
 Many of the challenges we faced while attempting to implement the particle filter were related to convergence and stability issues. In early versions of our filter, it was very difficult to achieve consistent convergence due to how confidence values were calculated. The initial approach used an inverse-square relationship based on the combined laser endpoint distance errors. However, this almost always produced multi-modal particle distributions that were both noisy and inaccurate, resulting in poor overall localization performance. As discussed further in the next section, replacing this approach with a likelihood field model significantly improved convergence, and single-modal convergence around the correct pose was achieved. However, a new problem related to stability arose. For instance, when LIDAR data corresponded to the robot traversing from one distinct area into another, the particle mode would occasionally diverge, even if it was previously converged on a good estimate. Additionally, even with the improvements of likelihood model, initial convergence on a correct pose remained unreliable in the case when particles were initialized uniformly without an initial pose guess, likely due to ambiguous geometric features such as similar walls and corners that may result in multiple high confidence particles. In the end, most of these issues were resolved through several design choices, which will be explained in the following section.
 
-## Design Decision:
+## Design Decisions:
 The design decisions that contributed the most to the success of our particle filter were mostly made within the functions `update_particles_with_laser()`, `resample_particles()`, and `initialize_particle_cloud()`.
 
 Referring back to the multi-modal convergence issues in the previous section, calculating confidence values based on an inverse square law was an incorrectly justified oversimplification of the sensor model. It was initially thought that an inverse square would result in very high confidence for well positioned laser endpoints and very low confidence for poorly positioned ones. However, further analysis reveals because the inverse square function decreases too sharply with distance, even small measurement deviations were excessively amplified. As a result, particles in significantly different map regions could still receive disproportionately high weights if a few of their laser endpoints happened to align by chance. This caused instability in the weight distribution and prevented the particle cloud from converging smoothly to a consistent mode.
