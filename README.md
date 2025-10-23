@@ -1,14 +1,14 @@
 # Project Goal:
 The goal of this project was to implement a particle filter in ROS2 to estimate a mobile robot’s pose within a known map. To do this, we utilized both LIDAR and odometry data to produce an accurate pose estimate, visualizing our resulting particle cloud and pose estimate in RViz. This allows us to verify the robot’s estimated pose relative to its actual location, especially with being able to see the LIDAR scan points overlaid over the occupancy grid / map.
 
-Here is a demo of the particle filter. The green arrow represents the estimated pose, each blue arrow represents a particle, the red dots are the laser scan endpoints, and the map is the occupancy grid.
+Here is a demo of the particle filter (sped up 4x). The green arrow represents the estimated pose, each blue arrow represents a particle, the red dots are the laser scan endpoints, and the map is the occupancy grid.
 
-(insert demo)
+![Particle Filter Demo](media/particle-filter-demo-1-sped-up.gif)
 
 ## Approach Overview:
 Below is a flow chart that overviews the entire process with how a particle filter can generate a pose estimate:
 
-(insert graphic)
+![Particle Filter Flow Chart](media/pf_diagram.png)
 
 In this project, most of the focus went towards the design and implementation of the following functions: `initialize_particle_cloud()`, `update_particles_with_odom()`, `update_particles_with_laser()`, `update_robot_pose()`, and `resample_particles()`.
 
